@@ -194,16 +194,14 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
     if args.Term > rf.current_term {
         rf.become_follower(args.Term)
     }
+    reply.Term = rf.current_term
     if rf.vote_for != -1 && rf.vote_for != args.Name {
-        reply.Term = rf.current_term
         return
     }
     if args.Last_log_term < rf.last_log_term() {
-        reply.Term = rf.current_term
         return
     }
     if args.Last_log_term == rf.last_log_term() && args.Last_log_index < rf.last_log_index(){
-        reply.Term = rf.current_term
         return
     }
     // TODO Changed
@@ -227,11 +225,10 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
         if reply.Term > rf.current_term{
             rf.become_follower(reply.Term)
             rf.persist()
-            return ok
         }
         if reply.Vote_granted {
             rf.vote_got ++
-            if rf.vote_got > len(rf.peers) / 2{
+            if rf.state == Candidate && rf.vote_got > len(rf.peers) / 2{
                 rf.state = Follower
                 rf.chanLeader <- true
             }
@@ -249,8 +246,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
     reply.Name = rf.me
     reply.Success = false
 
-    prev_i := args.Prev_log_index
-    prev_j := 0
 
     if args.Term < rf.current_term{
         reply.Term = rf.current_term
@@ -262,40 +257,29 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
     if args.Term > rf.current_term {
         rf.become_follower(args.Term)
     }
-    if args.Term == rf.current_term && rf.state == Candidate{
-        rf.become_follower(args.Term)
-    }
+
+    reply.Term = rf.current_term
     if args.Prev_log_index >= 0 && args.Prev_log_index > rf.last_log_index() {
-        reply.Term = rf.current_term
         reply.Last_log_index = rf.last_log_index()
         reply.Last_log_term = rf.last_log_term()
         return
     }
-    if args.Prev_log_index >= 0 && rf.logs[args.Prev_log_index].Term != args.Prev_log_term {
-        // fmt.Printf("Erase [:%v]\n", args.Prev_log_index)
-        rf.logs = rf.logs[: args.Prev_log_index]
-        reply.Term = rf.current_term
-        reply.Last_log_index = rf.last_log_index()
-        reply.Last_log_term = rf.last_log_term()
+
+    wrong_term := rf.logs[args.Prev_log_index].Term
+    if args.Prev_log_term != wrong_term {
+        for i := args.Prev_log_index - 1 ; i >= 0; i-- {
+            if rf.logs[i].Term != wrong_term {
+                reply.Last_log_index = i
+                break
+            }
+        }
         return
     }
-    // Now check commit
-    prev_i ++
-    for {
-        if !(prev_i < len(rf.logs) && prev_j < len(args.Entries)){
-            break
-        }
-        if rf.logs[prev_i].Term != args.Entries[prev_j].Term{
-            // fmt.Printf("Remove [:%v]\n", prev_i)
-            rf.logs = rf.logs[:prev_i]
-            break
-        }
-        prev_i ++
-        prev_j ++
-    }
-    if prev_j < len(args.Entries){
-        rf.logs = append(rf.logs, args.Entries[prev_j:]...)
-    }
+    rf.logs = rf.logs[: args.Prev_log_index+1]
+    rf.logs = append(rf.logs, args.Entries...)
+    reply.Success = true
+    reply.Last_log_index = rf.last_log_index()
+
     if args.Leader_commit > rf.commit_index{
         // fmt.Printf("Receive Leader commit %v Advance from %v size %v\n", args.Leader_commit, rf.commit_index, len(rf.logs))
         rf.commit_index = args.Leader_commit
@@ -305,7 +289,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
         rf.chanCommit <- true
     }
     reply.Success = true
-    reply.Term = rf.current_term
     reply.Last_log_index = rf.last_log_index()
     reply.Last_log_term = rf.last_log_term()
 }
@@ -401,7 +384,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     index := -1
     if rf.state == Leader {
         index = rf.last_log_index()+1
-        fmt.Printf("%v start log %v\n", rf.me, index)
+        // fmt.Printf("%v start log %v\n", rf.me, index)
         rf.logs = append(rf.logs, LogEntry{Term:rf.current_term,Command:command,Index:index}) 
         rf.persist()
     }
